@@ -1,8 +1,8 @@
 import tensorflow as tf
 import time
 import os
+import glob
 from model import Generator, Discriminator
-
 
 # --- Configuration ---
 BINARY_CROSS_ENTROPY = tf.keras.losses.BinaryCrossentropy(from_logits=True)
@@ -26,7 +26,7 @@ def generator_loss(disc_generated_output, gen_output, target, d2_output=None, ep
     gan_loss = BINARY_CROSS_ENTROPY(tf.ones_like(disc_generated_output), disc_generated_output)
     
     # D2 Contribution after Epoch 30
-    if epoch > SWITCH_EPOCH and d2_output is not None:
+    if epoch >= SWITCH_EPOCH and d2_output is not None:
         gan_loss += BINARY_CROSS_ENTROPY(tf.ones_like(d2_output), d2_output)
         
     # Mean Absolute Error (L1 Loss) for structural accuracy
@@ -53,7 +53,7 @@ def train_step(input_image, target, epoch):
         
         # D2 (Dense) Pass - Conditional Logic
         d2_real, d2_fake = None, None
-        if epoch > SWITCH_EPOCH:
+        if epoch >= SWITCH_EPOCH:
             d2_real = d2_dense(target, training=True)
             d2_fake = d2_dense(gen_output, training=True)
 
@@ -61,7 +61,8 @@ def train_step(input_image, target, epoch):
         gen_total_loss = generator_loss(d1_fake, gen_output, target, d2_fake, epoch)
         d1_loss = discriminator_loss(d1_real, d1_fake)
         
-        if epoch > SWITCH_EPOCH:
+        d2_loss = tf.constant(0.0)
+        if epoch >= SWITCH_EPOCH:
             d2_loss = discriminator_loss(d2_real, d2_fake)
 
     # Backpropagation
@@ -71,12 +72,12 @@ def train_step(input_image, target, epoch):
     d1_grads = d1_tape.gradient(d1_loss, d1_patch.trainable_variables)
     d1_optimizer.apply_gradients(zip(d1_grads, d1_patch.trainable_variables))
 
-    if epoch > SWITCH_EPOCH:
+    if epoch >= SWITCH_EPOCH:
         d2_grads = d2_tape.gradient(d2_loss, d2_dense.trainable_variables)
         d2_optimizer.apply_gradients(zip(d2_grads, d2_dense.trainable_variables))
         return gen_total_loss, d1_loss, d2_loss
     
-    return gen_total_loss, d1_loss, 0
+    return gen_total_loss, d1_loss, d2_loss
 
 # --- Training Loop ---
 def fit(train_ds, epochs):
@@ -84,15 +85,18 @@ def fit(train_ds, epochs):
         start = time.time()
         print(f"Epoch {epoch+1}/{epochs}")
         
+        last_g_loss, last_d1_loss, last_d2_loss = 0, 0, 0
+        
         for n, (input_image, target) in train_ds.enumerate():
             g_loss, d1_l, d2_l = train_step(input_image, target, epoch)
+            last_g_loss, last_d1_loss, last_d2_loss = g_loss, d1_l, d2_l
             
-        if (epoch + 1) % 10 == 0:
+        # Print summary every 5 epochs
+        if (epoch + 1) % 5 == 0:
             print(f'Time for epoch {epoch + 1} is {time.time()-start:.2f} sec')
-            print(f'Gen Loss: {g_loss:.4f}, D1 Loss: {d1_l:.4f}, D2 Loss: {d2_l:.4f}')
-
-print("Training script with 30-epoch D2 activation logic is ready.")
-import glob
+            print(f'Gen Loss: {last_g_loss:.4f}, D1 Loss: {last_d1_loss:.4f}, D2 Loss: {last_d2_loss:.4f}')
+            # Save checkpoint
+            generator.save_weights('generator_weights.weights.h5')
 
 # --- Data Loading Logic ---
 def load_and_preprocess_image(path):
@@ -101,11 +105,10 @@ def load_and_preprocess_image(path):
     image = tf.cast(image, tf.float32)
     
     # Split the 128x256 image into 128x128 sketch and 128x128 photo
-    # (Based on our successful preprocessing)
     sketch = image[:, :128, :]
     photo = image[:, 128:, :]
     
-    # Normalize to [-1, 1] for Tanh/GAN stability
+    # Normalize to [-1, 1]
     sketch = (sketch / 127.5) - 1
     photo = (photo / 127.5) - 1
     return sketch, photo
@@ -119,14 +122,26 @@ if __name__ == "__main__":
     else:
         print(f"Found {len(all_paths)} images. Preparing dataset...")
         train_dataset = tf.data.Dataset.from_tensor_slices(all_paths)
-        train_dataset = train_dataset.map(load_and_preprocess_image)
-        # Batch size 1 is standard for Pix2Pix/DCGAN forensic tasks
-        train_dataset = train_dataset.shuffle(len(all_paths)).batch(1)
+        train_dataset = train_dataset.map(load_and_preprocess_image).shuffle(len(all_paths)).batch(1)
 
-        # 2. Start Training
+        # 2. Warm-up Optimizers (Fixes the Epoch 30 ValueError)
+        print("Warming up optimizers...")
+        dummy_sketch = tf.random.normal([1, 128, 128, 3])
+        dummy_photo = tf.random.normal([1, 128, 128, 3])
+        
+        # Initialize D1 and D2 variables by performing a zero-gradient step
+        with tf.GradientTape(persistent=True) as tape:
+            gen_out = generator(dummy_sketch)
+            d1_out = d1_patch(dummy_photo)
+            d2_out = d2_dense(dummy_photo)
+            
+        d1_optimizer.apply_gradients(zip([tf.zeros_like(v) for v in d1_patch.trainable_variables], d1_patch.trainable_variables))
+        d2_optimizer.apply_gradients(zip([tf.zeros_like(v) for v in d2_dense.trainable_variables], d2_dense.trainable_variables))
+
+        # 3. Start Training
         print("Starting training loop on GPU...")
         fit(train_dataset, EPOCHS)
         
-        # 3. Save Final Weights
+        # 4. Final Save
         generator.save_weights('generator_weights.weights.h5')
-        print("Training complete. Weights saved as generator_weights.h5")
+        print("Training complete. Weights saved as generator_weights.weights.h5")
