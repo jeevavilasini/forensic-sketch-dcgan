@@ -128,5 +128,5 @@ if __name__ == "__main__":
         fit(train_dataset, EPOCHS)
         
         # 3. Save Final Weights
-        generator.save_weights('generator_weights.h5')
+        generator.save_weights('generator_weights.weights.h5')
         print("Training complete. Weights saved as generator_weights.h5")
