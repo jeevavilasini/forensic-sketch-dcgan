@@ -3,6 +3,7 @@ import time
 import os
 from model import Generator, Discriminator
 
+
 # --- Configuration ---
 BINARY_CROSS_ENTROPY = tf.keras.losses.BinaryCrossentropy(from_logits=True)
 LAMBDA = 100  # L1 loss weight per paper
@@ -91,3 +92,41 @@ def fit(train_ds, epochs):
             print(f'Gen Loss: {g_loss:.4f}, D1 Loss: {d1_l:.4f}, D2 Loss: {d2_l:.4f}')
 
 print("Training script with 30-epoch D2 activation logic is ready.")
+import glob
+
+# --- Data Loading Logic ---
+def load_and_preprocess_image(path):
+    image = tf.io.read_file(path)
+    image = tf.image.decode_jpeg(image, channels=3)
+    image = tf.cast(image, tf.float32)
+    
+    # Split the 128x256 image into 128x128 sketch and 128x128 photo
+    # (Based on our successful preprocessing)
+    sketch = image[:, :128, :]
+    photo = image[:, 128:, :]
+    
+    # Normalize to [-1, 1] for Tanh/GAN stability
+    sketch = (sketch / 127.5) - 1
+    photo = (photo / 127.5) - 1
+    return sketch, photo
+
+# --- Main Execution Block ---
+if __name__ == "__main__":
+    # 1. Prepare Dataset
+    all_paths = glob.glob('/content/processed_data/*.jpg')
+    if not all_paths:
+        print("Error: No images found in /content/processed_data. Run preprocess.py first!")
+    else:
+        print(f"Found {len(all_paths)} images. Preparing dataset...")
+        train_dataset = tf.data.Dataset.from_tensor_slices(all_paths)
+        train_dataset = train_dataset.map(load_and_preprocess_image)
+        # Batch size 1 is standard for Pix2Pix/DCGAN forensic tasks
+        train_dataset = train_dataset.shuffle(len(all_paths)).batch(1)
+
+        # 2. Start Training
+        print("Starting training loop on GPU...")
+        fit(train_dataset, EPOCHS)
+        
+        # 3. Save Final Weights
+        generator.save_weights('generator_weights.h5')
+        print("Training complete. Weights saved as generator_weights.h5")
