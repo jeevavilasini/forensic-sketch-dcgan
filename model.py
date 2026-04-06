@@ -12,10 +12,11 @@ def downsample(filters, size, apply_batchnorm=True):
     return result
 
 def upsample(filters, size, apply_dropout=False):
-    """Utility for Generator Decoder blocks [cite: 146, 164]"""
+    """Improved Decoder block to prevent checkerboard artifacts"""
     result = tf.keras.Sequential()
-    # Uses Conv2D Transpose for up-sampling [cite: 164]
-    result.add(layers.Conv2DTranspose(filters, size, strides=2, padding='same', use_bias=False))
+    # FIX: Replace Conv2DTranspose with UpSampling2D + Conv2D
+    result.add(layers.UpSampling2D(size=(2, 2))) 
+    result.add(layers.Conv2D(filters, size, strides=1, padding='same', use_bias=False))
     result.add(layers.BatchNormalization())
     if apply_dropout:
         result.add(layers.Dropout(0.5))
